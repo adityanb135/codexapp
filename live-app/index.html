@@ -3,80 +3,64 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agriculture Dehydration ERP - Live Demo</title>
+  <title>Agri ERP - Modern Operations Suite</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <section id="authGate" class="auth-gate">
-    <div class="auth-card">
-      <h2>AD ERP Login</h2>
-      <p class="sub">Sign in with Supabase Auth to access your ERP workspace.</p>
-      <div class="row-1">
-        <input id="authEmail" type="email" placeholder="Email" />
+    <div class="auth-card card">
+      <h1>Agri ERP</h1>
+      <p class="muted">Secure sign-in with Supabase Auth</p>
+      <div class="stack gap-sm">
+        <label>Email</label>
+        <input id="authEmail" type="email" placeholder="name@company.com" />
       </div>
-      <div class="row-1">
-        <input id="authPassword" type="password" placeholder="Password" />
+      <div class="stack gap-sm">
+        <label>Password</label>
+        <input id="authPassword" type="password" placeholder="Enter password" />
       </div>
-      <div class="auth-actions">
-        <button id="signInBtn" class="primary">Sign In</button>
-        <button id="signUpBtn">Create Account</button>
+      <div class="row gap-sm">
+        <button id="signInBtn" class="btn btn-primary">Sign In</button>
+        <button id="signUpBtn" class="btn">Create Account</button>
       </div>
-      <p id="authMessage" class="sub"></p>
-      <p class="sub small-note">If Supabase is not configured, the app runs in local demo mode.</p>
+      <p id="authMessage" class="muted"></p>
+      <p class="muted tiny">If Supabase is not configured, app runs in local mode.</p>
     </div>
   </section>
 
-  <div class="layout" id="appRoot">
-    <aside class="sidebar">
-      <h1>AD ERP</h1>
-      <nav>
-        <button class="nav-btn active" data-screen="dashboard">Dashboard</button>
-        <button class="nav-btn" data-screen="crm">CRM & Sales</button>
-        <button class="nav-btn" data-screen="production">Production</button>
-        <button class="nav-btn" data-screen="qc">QC & Compliance</button>
-        <button class="nav-btn" data-screen="documents">Documents</button>
-        <button class="nav-btn" data-screen="notifications">Notifications</button>
-        <button class="nav-btn" data-screen="audit">Audit Logs</button>
-      </nav>
+  <div id="appRoot" class="app-shell">
+    <aside class="sidebar card">
+      <div class="brand">
+        <div class="dot"></div>
+        <div>
+          <h2>Agri ERP</h2>
+          <p id="userRoleText" class="muted tiny"></p>
+        </div>
+      </div>
+      <div id="moduleNav" class="stack gap-xs"></div>
     </aside>
 
     <main class="main">
-      <header class="topbar">
+      <header class="topbar card">
         <div>
           <h2 id="screenTitle">Dashboard</h2>
-          <p class="sub">AI-Driven Agriculture Dehydration Factory ERP - Live Prototype</p>
+          <p id="screenSubtitle" class="muted">Operations overview</p>
         </div>
-        <div class="top-actions">
-          <label>
-            Mode
-            <input id="backendMode" value="Local Demo" readonly />
-          </label>
-          <label>
-            User
-            <input id="userEmail" value="guest" readonly />
-          </label>
-          <label>
-            Role
-            <select id="roleSelect"></select>
-          </label>
-          <button id="seedBtn">Reset Demo Data</button>
-          <button id="signOutBtn">Sign Out</button>
+        <div class="row gap-sm top-actions">
+          <input id="backendMode" readonly />
+          <input id="userEmail" readonly />
+          <button id="seedBtn" class="btn">Reset Demo Data</button>
+          <button id="signOutBtn" class="btn">Sign Out</button>
         </div>
       </header>
 
-      <section id="dashboard" class="screen active"></section>
-      <section id="crm" class="screen"></section>
-      <section id="production" class="screen"></section>
-      <section id="qc" class="screen"></section>
-      <section id="documents" class="screen"></section>
-      <section id="notifications" class="screen"></section>
-      <section id="audit" class="screen"></section>
+      <section id="dashboardMount"></section>
+      <section id="moduleMount"></section>
     </main>
   </div>
 
-  
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=20260215-supa1"></script>
+  <script src="app.js?v=20260215-modern1"></script>
 </body>
 </html>
