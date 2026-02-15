@@ -1,5 +1,7 @@
+const FACTORY_NAME = "Prajkta Technologies Pvt. Ltd.";
+
 const MODULES = [
-  { key: "super_admin", label: "Super Admin", pages: ["Dashboard", "Users", "Access Control", "Audit", "Analytics"] },
+  { key: "super_admin", label: "Super Admin", pages: ["Dashboard", "Users", "Access Control", "Audit", "Analytics", "Reports & Docs", "Event Logs"] },
   { key: "purchase", label: "Purchase", pages: ["Requisitions", "Vendors", "GRN"] },
   { key: "sales", label: "Sales", pages: ["Enquiries", "Quotations", "Sales Orders"] },
   { key: "master_data", label: "Master Data", pages: ["Products", "Customers", "BOM"] },
@@ -44,7 +46,9 @@ const state = {
   dispatchOrders: [],
   notifications: [],
   auditLogs: [],
-  documents: []
+  systemLogs: [],
+  documents: [],
+  certificates: []
 };
 
 const emptyState = JSON.parse(JSON.stringify(state));
@@ -208,6 +212,17 @@ function notify(title, body, severity = "neutral") {
   state.notifications.unshift({ id: id("NTF"), title, body, severity, at: now() });
 }
 
+function logSystem(eventType, details = {}, severity = "INFO") {
+  state.systemLogs.unshift({
+    id: id("LOG"),
+    at: now(),
+    eventType,
+    severity,
+    actor: currentUser?.email || "guest",
+    details
+  });
+}
+
 function saveLocalState() {
   localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
 }
@@ -280,17 +295,38 @@ function navigate(moduleKey, page) {
   renderAll();
 }
 
-function generateDocument(docType, referenceType, referenceId) {
+function generateDocument(docType, referenceType, referenceId, payload = {}) {
   const doc = {
     id: id("DOC"),
+    docNo: `${docType.replace(/\s+/g, "-").toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
     type: docType,
     referenceType,
     referenceId,
     generatedAt: now(),
-    hash: Math.random().toString(16).slice(2, 14)
+    hash: Math.random().toString(16).slice(2, 14),
+    payload
   };
   state.documents.unshift(doc);
+  logSystem("DOCUMENT_GENERATED", { docType, referenceType, referenceId, docId: doc.id });
   audit("DOCUMENT_GENERATED", "document", doc.id, null, doc);
+  return doc;
+}
+
+function generateCertificate(certType, referenceType, referenceId, payload = {}) {
+  const cert = {
+    id: id("CERT"),
+    certNo: `${certType.replace(/\s+/g, "-").toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
+    type: certType,
+    referenceType,
+    referenceId,
+    generatedAt: now(),
+    hash: Math.random().toString(16).slice(2, 14),
+    payload
+  };
+  state.certificates.unshift(cert);
+  logSystem("CERTIFICATE_GENERATED", { certType, referenceType, referenceId, certId: cert.id });
+  audit("CERTIFICATE_GENERATED", "certificate", cert.id, null, cert);
+  return cert;
 }
 
 function pdfEscape(str) {
@@ -312,6 +348,106 @@ function wrapPdfText(text, maxChars) {
   return lines.length ? lines : [""];
 }
 
+function buildSimplePdfBlob(title, lines) {
+  const header = "%PDF-1.4\n";
+  const c = [];
+  const left = 42;
+  const width = 595 - (left * 2);
+  let y = 805;
+  const text = (val, x, yy, size = 10, bold = false) => c.push(`BT /${bold ? "F2" : "F1"} ${size} Tf 1 0 0 1 ${x} ${yy} Tm (${pdfEscape(val)}) Tj ET`);
+  const line = (x1, y1, x2, y2, w = 0.8) => c.push(`${w} w ${x1} ${y1} m ${x2} ${y2} l S`);
+  const rect = (x, yy, w, h, bw = 0.8) => c.push(`${bw} w ${x} ${yy} ${w} ${h} re S`);
+
+  rect(left, 34, width, 774, 1);
+  rect(left, y - 44, width, 44, 1);
+  text(FACTORY_NAME, left + 10, y - 18, 11, true);
+  text(title, left + 10, y - 34, 13, true);
+  text(`Generated: ${now()}`, left + width - 165, y - 34, 9, false);
+  y -= 62;
+  line(left, y, left + width, y, 1);
+  y -= 16;
+
+  for (const raw of lines) {
+    const chunks = wrapPdfText(raw, 84);
+    for (const chunk of chunks) {
+      if (y < 56) break;
+      text(chunk, left + 10, y, 10, false);
+      y -= 14;
+    }
+  }
+
+  const content = c.join("\n");
+  const objs = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+    "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    `5 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`,
+    "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n"
+  ];
+
+  let body = "";
+  const offsets = [0];
+  for (const o of objs) {
+    offsets.push((header + body).length);
+    body += o;
+  }
+  const xrefStart = (header + body).length;
+  let xref = "xref\n0 7\n0000000000 65535 f \n";
+  for (let i = 1; i <= 6; i++) xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  const trailer = `trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return new Blob([header, body, xref, trailer], { type: "application/pdf" });
+}
+
+function downloadPdfBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadDocumentPdf(docId) {
+  const doc = state.documents.find(d => d.id === docId);
+  if (!doc) return;
+  const lines = [
+    `Document Number: ${doc.docNo}`,
+    `Document Type: ${doc.type}`,
+    `Reference: ${doc.referenceType} / ${doc.referenceId}`,
+    `Generated At: ${doc.generatedAt}`,
+    `Hash: ${doc.hash}`,
+    "",
+    "Payload Snapshot:",
+    ...Object.entries(doc.payload || {}).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+  ];
+  const pdf = buildSimplePdfBlob(`${doc.type} Document`, lines);
+  downloadPdfBlob(`${doc.docNo}.pdf`, pdf);
+  audit("EXPORT", "document", doc.id, null, { format: "pdf" });
+  logSystem("DOCUMENT_DOWNLOADED", { docId: doc.id, type: doc.type });
+}
+
+function downloadCertificatePdf(certId) {
+  const cert = state.certificates.find(c => c.id === certId);
+  if (!cert) return;
+  const lines = [
+    `Certificate Number: ${cert.certNo}`,
+    `Certificate Type: ${cert.type}`,
+    `Reference: ${cert.referenceType} / ${cert.referenceId}`,
+    `Generated At: ${cert.generatedAt}`,
+    `Hash: ${cert.hash}`,
+    "",
+    "Certificate Details:",
+    ...Object.entries(cert.payload || {}).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+  ];
+  const pdf = buildSimplePdfBlob(`${cert.type} Certificate`, lines);
+  downloadPdfBlob(`${cert.certNo}.pdf`, pdf);
+  audit("EXPORT", "certificate", cert.id, null, { format: "pdf" });
+  logSystem("CERTIFICATE_DOWNLOADED", { certId: cert.id, type: cert.type });
+}
+
 function buildWorkOrderPdfBlob(workOrder) {
   const header = "%PDF-1.4\n";
   const c = [];
@@ -325,7 +461,7 @@ function buildWorkOrderPdfBlob(workOrder) {
 
   rect(left, 34, width, 774, 1.1);
   rect(left, y - 40, width, 40, 1.1);
-  text("SAMPLE WORK ORDER STANDARD TEMPLATE / V1", left + 10, y - 24, 13, true);
+  text(`${FACTORY_NAME} / WORK ORDER TEMPLATE V1`, left + 10, y - 24, 11, true);
   text("WORK ORDER", left + width - 110, y - 24, 12, true);
   y -= 58;
 
@@ -539,11 +675,16 @@ function seed() {
     { id: id("DSP"), customer: "SunDry Foods", vehicle: "Pending", eta: "2026-03-03", status: "OPEN" }
   ];
 
+  // Seed baseline report documents for visibility.
+  generateDocument("Operational Report", "report", id("RPT"), { generatedAt: now(), note: "Initial baseline operational summary." });
+  generateDocument("Financial Report", "report", id("RPT"), { generatedAt: now(), note: "Initial baseline financial summary." });
+
   const first = firstAccessibleModuleAndPage();
   state.ui.activeModule = first.module.key;
   state.ui.activePage = first.page;
 
   notify("System Ready", "Modern module-based ERP initialized", "neutral");
+  logSystem("SYSTEM_READY", { factory: FACTORY_NAME, modules: MODULES.length });
   audit("SEED", "system", "seed", null, { ok: true });
 }
 
@@ -608,8 +749,29 @@ function createSalesOrder(qId) {
     status: "CONFIRMED"
   };
   state.salesOrders.unshift(so);
+  // Auto workflow: confirmed SO triggers purchase requisition + batch intake planning.
+  const pr = {
+    id: id("PRQ"),
+    material: `Raw material for ${so.product}`,
+    qty: Number(so.qty) * 1.15,
+    requiredBy: today(),
+    status: "PENDING",
+    linkedSalesOrder: so.id
+  };
+  state.purchaseRequisitions.unshift(pr);
+  const intake = {
+    id: id("PRE"),
+    batch: `BATCH-${so.id}`,
+    stage: "Batch Intake",
+    inputQty: Number(so.qty) * 1.1,
+    status: "OPEN",
+    linkedSalesOrder: so.id
+  };
+  state.preProcessing.unshift(intake);
   audit("CREATE", "sales_order", so.id, null, so);
-  generateDocument("Sales Order", "sales_order", so.id);
+  generateDocument("Sales Order", "sales_order", so.id, so);
+  generateDocument("Purchase Requisition", "purchase_requisition", pr.id, pr);
+  logSystem("WORKFLOW_TRIGGERED", { from: "sales_order", soId: so.id, created: ["purchase_requisition", "pre_processing_batch"] });
   notify("Sales Order", `${so.id} created`, "neutral");
   renderAll();
 }
@@ -624,6 +786,8 @@ function addPurchaseReq(formData) {
   };
   state.purchaseRequisitions.unshift(pr);
   audit("CREATE", "purchase_requisition", pr.id, null, pr);
+  generateDocument("Purchase Requisition", "purchase_requisition", pr.id, pr);
+  logSystem("PURCHASE_REQUISITION_CREATED", { prId: pr.id, material: pr.material });
   renderAll();
 }
 
@@ -643,7 +807,19 @@ function addGRN(formData) {
     status: formData.qcHold ? "HOLD" : "RELEASED"
   };
   state.grn.unshift(g);
+  if (!formData.qcHold) {
+    state.preProcessing.unshift({
+      id: id("PRE"),
+      batch: g.batchTag,
+      stage: "Batch Intake",
+      inputQty: Number((Math.random() * 4000 + 1000).toFixed(2)),
+      status: "OPEN",
+      sourceGrn: g.id
+    });
+  }
   audit("CREATE", "grn", g.id, null, g);
+  generateDocument("GRN", "grn", g.id, g);
+  logSystem("GRN_POSTED", { grnId: g.id, qcHold: !!formData.qcHold });
   renderAll();
 }
 
@@ -671,7 +847,18 @@ function addBOM(formData) {
 function addPreProcessing(formData) {
   const r = { id: id("PRE"), batch: formData.batch, stage: "Batch Intake", inputQty: Number(formData.inputQty), status: "OPEN" };
   state.preProcessing.unshift(r);
+  state.jobCards.unshift({
+    id: id("JOB"),
+    batch: r.batch,
+    machine: "Auto-Assigned SR-01",
+    inputQty: Number(r.inputQty),
+    outputQty: 0,
+    status: "OPEN",
+    source: "pre_processing"
+  });
   audit("CREATE", "pre_processing", r.id, null, r);
+  generateDocument("Batch Intake Slip", "pre_processing", r.id, r);
+  logSystem("PRE_PROCESSING_RECORDED", { preId: r.id, batch: r.batch });
   renderAll();
 }
 
@@ -679,6 +866,7 @@ function addWashSort(formData) {
   const r = { id: id("WS"), batch: formData.batch, sortedQty: Number(formData.sortedQty), rejectedQty: Number(formData.rejectedQty), status: "COMPLETED" };
   state.washSort.unshift(r);
   audit("CREATE", "wash_sort", r.id, null, r);
+  logSystem("WASH_SORT_COMPLETED", { washSortId: r.id, batch: r.batch, sorted: r.sortedQty, rejected: r.rejectedQty });
   renderAll();
 }
 
@@ -692,10 +880,21 @@ function addQC(formData) {
   };
   state.qcReports.unshift(qc);
   audit("CREATE", "qc", qc.id, null, qc);
+  generateDocument("QC Report", "qc_report", qc.id, qc);
   if (qc.status === "FAILED") {
     const n = { id: id("NCR"), qcId: qc.id, rootCause: "Parameter out of range", status: "OPEN" };
     state.ncr.unshift(n);
     audit("CREATE", "ncr", n.id, null, n);
+    generateDocument("NCR Report", "ncr", n.id, n);
+    logSystem("QC_FAILED", { qcId: qc.id, ncrId: n.id }, "WARN");
+  } else {
+    generateCertificate("COA", "qc_report", qc.id, {
+      batch: qc.batch,
+      moisture: qc.moisture,
+      color: qc.color,
+      status: qc.status
+    });
+    logSystem("QC_PASSED", { qcId: qc.id, certificate: "COA" });
   }
   renderAll();
 }
@@ -704,6 +903,8 @@ function addJobCard(formData) {
   const j = { id: id("JOB"), batch: formData.batch, machine: formData.machine, inputQty: Number(formData.inputQty), outputQty: Number(formData.outputQty), status: "OPEN" };
   state.jobCards.unshift(j);
   audit("CREATE", "job_card", j.id, null, j);
+  generateDocument("Job Card", "job_card", j.id, j);
+  logSystem("JOB_CARD_CREATED", { jobCardId: j.id, machine: j.machine, batch: j.batch });
   renderAll();
 }
 
@@ -711,6 +912,7 @@ function addMachineLog(formData) {
   const m = { id: id("MLOG"), machine: formData.machine, downtimeMins: Number(formData.downtimeMins), reason: formData.reason, status: "RECORDED" };
   state.machineLogs.unshift(m);
   audit("CREATE", "machine_log", m.id, null, m);
+  logSystem("MACHINE_DOWNTIME", { logId: m.id, machine: m.machine, downtimeMins: m.downtimeMins }, "WARN");
   renderAll();
 }
 
@@ -718,22 +920,34 @@ function addInvoice(formData) {
   const i = { id: id("INV"), customer: formData.customer, amount: Number(formData.amount), dueDate: formData.dueDate, status: "OPEN" };
   state.invoices.unshift(i);
   audit("CREATE", "invoice", i.id, null, i);
-  generateDocument("Invoice", "invoice", i.id);
+  generateDocument("Invoice", "invoice", i.id, i);
+  logSystem("INVOICE_CREATED", { invoiceId: i.id, amount: i.amount, customer: i.customer });
   renderAll();
 }
 
 function addPayment(formData) {
   const p = { id: id("PAY"), invoiceId: formData.invoiceId, amount: Number(formData.amount), mode: formData.mode, status: "POSTED" };
   state.payments.unshift(p);
+  const inv = state.invoices.find(i => i.id === p.invoiceId);
+  if (inv) inv.status = "PAID";
   audit("CREATE", "payment", p.id, null, p);
+  generateDocument("Payment Receipt", "payment", p.id, p);
+  logSystem("PAYMENT_POSTED", { paymentId: p.id, invoiceId: p.invoiceId, amount: p.amount });
   renderAll();
 }
 
 function addPackingSlip(formData) {
-  const p = { id: id("PKG"), batch: formData.batch, customer: formData.customer, weight: Number(formData.weight), status: "READY" };
+  const p = { id: id("PKG"), batch: formData.batch, customer: formData.customer, weight: Number(formData.weight), status: "READY", createdAt: now() };
   state.packingSlips.unshift(p);
+  const autoLabel = { id: id("LBL"), batch: p.batch, spec: `${p.customer} / ${p.weight}kg`, status: "GENERATED", sourcePackingSlip: p.id };
+  state.labels.unshift(autoLabel);
+  const autoDispatch = { id: id("DSP"), customer: p.customer, vehicle: "To be assigned", eta: today(), status: "OPEN", packingSlipId: p.id };
+  state.dispatchOrders.unshift(autoDispatch);
   audit("CREATE", "packing_slip", p.id, null, p);
-  generateDocument("Packing Slip", "packing_slip", p.id);
+  generateDocument("Packing Slip", "packing_slip", p.id, p);
+  generateDocument("Label Sheet", "label", autoLabel.id, autoLabel);
+  generateDocument("Dispatch Challan", "dispatch", autoDispatch.id, autoDispatch);
+  logSystem("PACKAGING_COMPLETED", { packingSlipId: p.id, labelId: autoLabel.id, dispatchId: autoDispatch.id });
   renderAll();
 }
 
@@ -741,6 +955,7 @@ function addLabel(formData) {
   const l = { id: id("LBL"), batch: formData.batch, spec: formData.spec, status: "GENERATED" };
   state.labels.unshift(l);
   audit("CREATE", "label", l.id, null, l);
+  generateDocument("Label Sheet", "label", l.id, l);
   renderAll();
 }
 
@@ -748,6 +963,8 @@ function addDispatch(formData) {
   const d = { id: id("DSP"), customer: formData.customer, vehicle: formData.vehicle, eta: formData.eta, status: "OPEN" };
   state.dispatchOrders.unshift(d);
   audit("CREATE", "dispatch", d.id, null, d);
+  generateDocument("Dispatch Challan", "dispatch", d.id, d);
+  logSystem("DISPATCH_ORDER_CREATED", { dispatchId: d.id, customer: d.customer });
   renderAll();
 }
 
@@ -758,6 +975,14 @@ function addTracking(formData) {
   d.status = formData.status;
   d.trackingNote = formData.note;
   audit("UPDATE", "dispatch", d.id, old, d);
+  if (d.status === "DELIVERED") {
+    const value = Math.round((Math.random() * 200000 + 50000) * 100) / 100;
+    const inv = { id: id("INV"), customer: d.customer, amount: value, dueDate: today(), status: "OPEN", sourceDispatchId: d.id };
+    state.invoices.unshift(inv);
+    generateDocument("Invoice", "invoice", inv.id, inv);
+    logSystem("DISPATCH_DELIVERED_INVOICE_CREATED", { dispatchId: d.id, invoiceId: inv.id });
+  }
+  logSystem("DISPATCH_TRACKING_UPDATED", { dispatchId: d.id, status: d.status, note: d.trackingNote });
   renderAll();
 }
 
@@ -809,18 +1034,71 @@ function togglePageAccess(userId, moduleKey, page, enabled) {
   renderAll();
 }
 
+function getDocumentByRef(referenceType, referenceId, docType = null) {
+  return state.documents.find(d =>
+    d.referenceType === referenceType &&
+    d.referenceId === referenceId &&
+    (!docType || d.type === docType)
+  );
+}
+
+function generateOperationalReport() {
+  const report = {
+    reportType: "Operational Report",
+    enquiries: state.enquiries.length,
+    quotations: state.quotations.length,
+    salesOrders: state.salesOrders.length,
+    batches: state.preProcessing.length,
+    qcReports: state.qcReports.length,
+    dispatchOrders: state.dispatchOrders.length,
+    generatedAt: now()
+  };
+  const doc = generateDocument("Operational Report", "report", id("RPT"), report);
+  logSystem("REPORT_GENERATED", { reportType: "Operational", docId: doc.id });
+  renderAll();
+}
+
+function generateFinancialReport() {
+  const billed = state.invoices.reduce((a, x) => a + Number(x.amount || 0), 0);
+  const received = state.payments.reduce((a, x) => a + Number(x.amount || 0), 0);
+  const overdue = state.invoices.filter(i => i.status !== "PAID").length;
+  const report = { reportType: "Financial Report", billed, received, overdue, generatedAt: now() };
+  const doc = generateDocument("Financial Report", "report", id("RPT"), report);
+  logSystem("REPORT_GENERATED", { reportType: "Financial", docId: doc.id });
+  renderAll();
+}
+
+function generateYieldReport() {
+  const input = state.jobCards.reduce((a, x) => a + Number(x.inputQty || 0), 0);
+  const output = state.jobCards.reduce((a, x) => a + Number(x.outputQty || 0), 0);
+  const yieldPct = input ? Number(((output / input) * 100).toFixed(2)) : 0;
+  const report = { reportType: "Yield Report", totalInput: input, totalOutput: output, yieldPct, generatedAt: now() };
+  const doc = generateDocument("Yield Report", "report", id("RPT"), report);
+  logSystem("REPORT_GENERATED", { reportType: "Yield", docId: doc.id });
+  renderAll();
+}
+
+function generateGSTReport() {
+  const taxable = state.invoices.reduce((a, x) => a + Number(x.amount || 0), 0);
+  const gst = Number((taxable * 0.18).toFixed(2));
+  const report = { reportType: "GST Report", taxableAmount: taxable, gstAmount: gst, generatedAt: now() };
+  const doc = generateDocument("GST Report", "report", id("RPT"), report);
+  logSystem("REPORT_GENERATED", { reportType: "GST", docId: doc.id });
+  renderAll();
+}
+
 function kpiCardsHtml() {
   const pendingApprovals = state.quotations.filter(q => q.status === "PENDING").length;
   const qcFailures = state.qcReports.filter(q => q.status === "FAILED").length;
   const openInvoices = state.invoices.filter(i => i.status === "OPEN").length;
-  const openDispatch = state.dispatchOrders.filter(d => d.status !== "DELIVERED").length;
+  const docsCount = state.documents.length + state.certificates.length;
 
   return `
     <div class="kpi-grid">
       <div class="card kpi-card"><div class="muted">Pending Approvals</div><div class="kpi-value">${pendingApprovals}</div></div>
       <div class="card kpi-card"><div class="muted">QC Failures</div><div class="kpi-value">${qcFailures}</div></div>
       <div class="card kpi-card"><div class="muted">Open Invoices</div><div class="kpi-value">${openInvoices}</div></div>
-      <div class="card kpi-card"><div class="muted">Dispatch In-Flight</div><div class="kpi-value">${openDispatch}</div></div>
+      <div class="card kpi-card"><div class="muted">Docs & Certificates</div><div class="kpi-value">${docsCount}</div></div>
     </div>
   `;
 }
@@ -890,10 +1168,11 @@ function salesPageHtml(page) {
     return `
       <div class="card panel table-wrap">
         <h3>Quotations</h3>
-        <table><thead><tr><th>ID</th><th>Customer</th><th>Product</th><th>Qty</th><th>Margin%</th><th>Status</th><th>Expires</th><th>Work Order</th><th>Actions</th></tr></thead><tbody>
+        <table><thead><tr><th>ID</th><th>Customer</th><th>Product</th><th>Qty</th><th>Margin%</th><th>Status</th><th>Expires</th><th>Work Order</th><th>Quotation PDF</th><th>Actions</th></tr></thead><tbody>
           ${state.quotations.map(q => `<tr>
             <td>${q.id}</td><td>${q.customer}</td><td>${q.product}</td><td>${q.qty}</td><td>${q.margin}</td><td>${statusBadge(q.status)}</td><td>${q.expiresOn}</td>
             <td>${state.workOrders.some(w => w.quotationId === q.id) ? `<button class="btn" onclick="downloadWorkOrderPdf('${q.id}')">Download PDF</button>` : "-"}</td>
+            <td>${getDocumentByRef("quotation", q.id, "Quotation") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("quotation", q.id, "Quotation").id}')">Download</button>` : "-"}</td>
             <td class="actions">
               ${q.status === "PENDING" ? `<button class="btn" onclick="approveQuotation('${q.id}')">Approve</button>` : ""}
               ${q.status === "APPROVED" ? `<button class="btn btn-primary" onclick="createSalesOrder('${q.id}')">Create SO</button>` : ""}
@@ -907,8 +1186,8 @@ function salesPageHtml(page) {
   return `
     <div class="card panel table-wrap">
       <h3>Sales Orders</h3>
-      <table><thead><tr><th>ID</th><th>Customer</th><th>Product</th><th>Qty</th><th>Credit</th><th>Status</th></tr></thead><tbody>
-        ${state.salesOrders.map(so => `<tr><td>${so.id}</td><td>${so.customer}</td><td>${so.product}</td><td>${so.qty}</td><td>${statusBadge(so.creditStatus)}</td><td>${statusBadge(so.status)}</td></tr>`).join("")}
+      <table><thead><tr><th>ID</th><th>Customer</th><th>Product</th><th>Qty</th><th>Credit</th><th>Status</th><th>Sales Order PDF</th></tr></thead><tbody>
+        ${state.salesOrders.map(so => `<tr><td>${so.id}</td><td>${so.customer}</td><td>${so.product}</td><td>${so.qty}</td><td>${statusBadge(so.creditStatus)}</td><td>${statusBadge(so.status)}</td><td>${getDocumentByRef("sales_order", so.id, "Sales Order") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("sales_order", so.id, "Sales Order").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table>
     </div>
   `;
@@ -927,8 +1206,8 @@ function purchasePageHtml(page) {
         </form>
       </div>
       <div class="card panel table-wrap">
-        <table><thead><tr><th>ID</th><th>Material</th><th>Qty</th><th>Required By</th><th>Status</th></tr></thead><tbody>
-          ${state.purchaseRequisitions.map(r => `<tr><td>${r.id}</td><td>${r.material}</td><td>${r.qty}</td><td>${r.requiredBy}</td><td>${statusBadge(r.status)}</td></tr>`).join("")}
+        <table><thead><tr><th>ID</th><th>Material</th><th>Qty</th><th>Required By</th><th>Status</th><th>PR PDF</th></tr></thead><tbody>
+          ${state.purchaseRequisitions.map(r => `<tr><td>${r.id}</td><td>${r.material}</td><td>${r.qty}</td><td>${r.requiredBy}</td><td>${statusBadge(r.status)}</td><td>${getDocumentByRef("purchase_requisition", r.id) ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("purchase_requisition", r.id).id}')">Download</button>` : "-"}</td></tr>`).join("")}
         </tbody></table>
       </div>
     `;
@@ -964,8 +1243,8 @@ function purchasePageHtml(page) {
       </form>
     </div>
     <div class="card panel table-wrap">
-      <table><thead><tr><th>ID</th><th>Vendor</th><th>Material</th><th>Batch</th><th>Status</th></tr></thead><tbody>
-        ${state.grn.map(g => `<tr><td>${g.id}</td><td>${g.vendor}</td><td>${g.material}</td><td>${g.batchTag}</td><td>${statusBadge(g.status)}</td></tr>`).join("")}
+      <table><thead><tr><th>ID</th><th>Vendor</th><th>Material</th><th>Batch</th><th>Status</th><th>GRN PDF</th></tr></thead><tbody>
+        ${state.grn.map(g => `<tr><td>${g.id}</td><td>${g.vendor}</td><td>${g.material}</td><td>${g.batchTag}</td><td>${statusBadge(g.status)}</td><td>${getDocumentByRef("grn", g.id, "GRN") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("grn", g.id, "GRN").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table>
     </div>
   `;
@@ -1048,16 +1327,16 @@ function inspectionPageHtml(page) {
         <select name="status"><option value="PASSED">PASSED</option><option value="FAILED">FAILED</option></select>
         <button class="btn btn-primary" type="submit">Submit QC</button>
       </form></div>
-      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Moisture</th><th>Color</th><th>Status</th></tr></thead><tbody>
-        ${state.qcReports.map(q => `<tr><td>${q.id}</td><td>${q.batch}</td><td>${q.moisture}</td><td>${q.color}</td><td>${statusBadge(q.status)}</td></tr>`).join("")}
+      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Moisture</th><th>Color</th><th>Status</th><th>QC PDF</th><th>COA</th></tr></thead><tbody>
+        ${state.qcReports.map(q => `<tr><td>${q.id}</td><td>${q.batch}</td><td>${q.moisture}</td><td>${q.color}</td><td>${statusBadge(q.status)}</td><td>${getDocumentByRef("qc_report", q.id, "QC Report") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("qc_report", q.id, "QC Report").id}')">Download</button>` : "-"}</td><td>${state.certificates.find(c => c.referenceType === "qc_report" && c.referenceId === q.id && c.type === "COA") ? `<button class="btn" onclick="downloadCertificatePdf('${state.certificates.find(c => c.referenceType === "qc_report" && c.referenceId === q.id && c.type === "COA").id}')">Download COA</button>` : "-"}</td></tr>`).join("")}
       </tbody></table></div>
     `;
   }
 
   return `
     <div class="card panel table-wrap"><h3>NCR</h3>
-      <table><thead><tr><th>ID</th><th>QC ID</th><th>Root Cause</th><th>Status</th></tr></thead><tbody>
-        ${state.ncr.map(n => `<tr><td>${n.id}</td><td>${n.qcId}</td><td>${n.rootCause}</td><td>${statusBadge(n.status)}</td></tr>`).join("")}
+      <table><thead><tr><th>ID</th><th>QC ID</th><th>Root Cause</th><th>Status</th><th>NCR PDF</th></tr></thead><tbody>
+        ${state.ncr.map(n => `<tr><td>${n.id}</td><td>${n.qcId}</td><td>${n.rootCause}</td><td>${statusBadge(n.status)}</td><td>${getDocumentByRef("ncr", n.id, "NCR Report") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("ncr", n.id, "NCR Report").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table>
     </div>
   `;
@@ -1073,8 +1352,8 @@ function sizeReductionPageHtml(page) {
         <input name="outputQty" type="number" placeholder="Output Qty" required />
         <button class="btn btn-primary" type="submit">Create Job Card</button>
       </form></div>
-      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Machine</th><th>Input</th><th>Output</th><th>Status</th></tr></thead><tbody>
-        ${state.jobCards.map(j => `<tr><td>${j.id}</td><td>${j.batch}</td><td>${j.machine}</td><td>${j.inputQty}</td><td>${j.outputQty}</td><td>${statusBadge(j.status)}</td></tr>`).join("")}
+      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Machine</th><th>Input</th><th>Output</th><th>Status</th><th>Job Card PDF</th></tr></thead><tbody>
+        ${state.jobCards.map(j => `<tr><td>${j.id}</td><td>${j.batch}</td><td>${j.machine}</td><td>${j.inputQty}</td><td>${j.outputQty}</td><td>${statusBadge(j.status)}</td><td>${getDocumentByRef("job_card", j.id, "Job Card") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("job_card", j.id, "Job Card").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table></div>
     `;
   }
@@ -1101,8 +1380,8 @@ function invoicingPageHtml(page) {
         <input name="dueDate" type="date" required />
         <button class="btn btn-primary" type="submit">Create Invoice</button>
       </form></div>
-      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Customer</th><th>Amount</th><th>Due Date</th><th>Status</th></tr></thead><tbody>
-        ${state.invoices.map(i => `<tr><td>${i.id}</td><td>${i.customer}</td><td>${i.amount}</td><td>${i.dueDate}</td><td>${statusBadge(i.status)}</td></tr>`).join("")}
+      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Customer</th><th>Amount</th><th>Due Date</th><th>Status</th><th>Invoice PDF</th></tr></thead><tbody>
+        ${state.invoices.map(i => `<tr><td>${i.id}</td><td>${i.customer}</td><td>${i.amount}</td><td>${i.dueDate}</td><td>${statusBadge(i.status)}</td><td>${getDocumentByRef("invoice", i.id, "Invoice") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("invoice", i.id, "Invoice").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table></div>
     `;
   }
@@ -1114,8 +1393,8 @@ function invoicingPageHtml(page) {
       <input name="mode" placeholder="Mode" value="Bank Transfer" required />
       <button class="btn btn-primary" type="submit">Post Payment</button>
     </form></div>
-    <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Invoice ID</th><th>Amount</th><th>Mode</th><th>Status</th></tr></thead><tbody>
-      ${state.payments.map(p => `<tr><td>${p.id}</td><td>${p.invoiceId}</td><td>${p.amount}</td><td>${p.mode}</td><td>${statusBadge(p.status)}</td></tr>`).join("")}
+    <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Invoice ID</th><th>Amount</th><th>Mode</th><th>Status</th><th>Receipt PDF</th></tr></thead><tbody>
+      ${state.payments.map(p => `<tr><td>${p.id}</td><td>${p.invoiceId}</td><td>${p.amount}</td><td>${p.mode}</td><td>${statusBadge(p.status)}</td><td>${getDocumentByRef("payment", p.id, "Payment Receipt") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("payment", p.id, "Payment Receipt").id}')">Download</button>` : "-"}</td></tr>`).join("")}
     </tbody></table></div>
   `;
 }
@@ -1129,8 +1408,8 @@ function packagingPageHtml(page) {
         <input name="weight" type="number" placeholder="Weight" required />
         <button class="btn btn-primary" type="submit">Create Slip</button>
       </form></div>
-      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Customer</th><th>Weight</th><th>Status</th></tr></thead><tbody>
-        ${state.packingSlips.map(p => `<tr><td>${p.id}</td><td>${p.batch}</td><td>${p.customer}</td><td>${p.weight}</td><td>${statusBadge(p.status)}</td></tr>`).join("")}
+      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Customer</th><th>Weight</th><th>Status</th><th>Packing Slip PDF</th></tr></thead><tbody>
+        ${state.packingSlips.map(p => `<tr><td>${p.id}</td><td>${p.batch}</td><td>${p.customer}</td><td>${p.weight}</td><td>${statusBadge(p.status)}</td><td>${getDocumentByRef("packing_slip", p.id, "Packing Slip") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("packing_slip", p.id, "Packing Slip").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table></div>
     `;
   }
@@ -1141,8 +1420,8 @@ function packagingPageHtml(page) {
       <input name="spec" placeholder="Label Spec" required />
       <button class="btn btn-primary" type="submit">Generate Label</button>
     </form></div>
-    <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Spec</th><th>Status</th></tr></thead><tbody>
-      ${state.labels.map(l => `<tr><td>${l.id}</td><td>${l.batch}</td><td>${l.spec}</td><td>${statusBadge(l.status)}</td></tr>`).join("")}
+    <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Batch</th><th>Spec</th><th>Status</th><th>Label PDF</th></tr></thead><tbody>
+      ${state.labels.map(l => `<tr><td>${l.id}</td><td>${l.batch}</td><td>${l.spec}</td><td>${statusBadge(l.status)}</td><td>${getDocumentByRef("label", l.id, "Label Sheet") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("label", l.id, "Label Sheet").id}')">Download</button>` : "-"}</td></tr>`).join("")}
     </tbody></table></div>
   `;
 }
@@ -1156,8 +1435,8 @@ function dispatchPageHtml(page) {
         <input name="eta" type="date" required />
         <button class="btn btn-primary" type="submit">Create Dispatch</button>
       </form></div>
-      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Customer</th><th>Vehicle</th><th>ETA</th><th>Status</th></tr></thead><tbody>
-        ${state.dispatchOrders.map(d => `<tr><td>${d.id}</td><td>${d.customer}</td><td>${d.vehicle}</td><td>${d.eta}</td><td>${statusBadge(d.status)}</td></tr>`).join("")}
+      <div class="card panel table-wrap"><table><thead><tr><th>ID</th><th>Customer</th><th>Vehicle</th><th>ETA</th><th>Status</th><th>Dispatch PDF</th></tr></thead><tbody>
+        ${state.dispatchOrders.map(d => `<tr><td>${d.id}</td><td>${d.customer}</td><td>${d.vehicle}</td><td>${d.eta}</td><td>${statusBadge(d.status)}</td><td>${getDocumentByRef("dispatch", d.id, "Dispatch Challan") ? `<button class="btn" onclick="downloadDocumentPdf('${getDocumentByRef("dispatch", d.id, "Dispatch Challan").id}')">Download</button>` : "-"}</td></tr>`).join("")}
       </tbody></table></div>
     `;
   }
@@ -1177,6 +1456,10 @@ function superAdminPageHtml(page) {
     return `
       ${kpiCardsHtml()}
       ${analyticsPanelHtml()}
+      <div class="card panel">
+        <h3>Factory</h3>
+        <p><b>${FACTORY_NAME}</b> unified operations view with workflow triggers, document engine, certificates, and full audit traceability.</p>
+      </div>
       <div class="card panel table-wrap">
         <h3>Recent Notifications</h3>
         <table><thead><tr><th>Time</th><th>Title</th><th>Body</th><th>Severity</th></tr></thead><tbody>
@@ -1252,8 +1535,60 @@ function superAdminPageHtml(page) {
     return `
       <div class="card panel table-wrap">
         <h3>Audit Logs</h3>
-        <table><thead><tr><th>Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Entity</th><th>ID</th></tr></thead><tbody>
-          ${state.auditLogs.map(a => `<tr><td>${a.timestamp}</td><td>${a.actor}</td><td>${a.role}</td><td>${a.action}</td><td>${a.entityType}</td><td>${a.entityId}</td></tr>`).join("")}
+        <table><thead><tr><th>Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Entity</th><th>ID</th><th>Before</th><th>After</th></tr></thead><tbody>
+          ${state.auditLogs.map(a => `<tr><td>${a.timestamp}</td><td>${a.actor}</td><td>${a.role}</td><td>${a.action}</td><td>${a.entityType}</td><td>${a.entityId}</td><td><small>${a.oldValue ? JSON.stringify(a.oldValue).slice(0, 80) : "-"}</small></td><td><small>${a.newValue ? JSON.stringify(a.newValue).slice(0, 80) : "-"}</small></td></tr>`).join("")}
+        </tbody></table>
+      </div>
+    `;
+  }
+
+  if (page === "Analytics") {
+    return `
+      ${analyticsPanelHtml()}
+      <div class="card panel">
+        <h3>Generate Reports</h3>
+        <div class="actions">
+          <button class="btn" onclick="generateOperationalReport()">Operational Report</button>
+          <button class="btn" onclick="generateFinancialReport()">Financial Report</button>
+          <button class="btn" onclick="generateYieldReport()">Yield Report</button>
+          <button class="btn" onclick="generateGSTReport()">GST Report</button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (page === "Reports & Docs") {
+    return `
+      <div class="card panel">
+        <h3>Report & Document Center</h3>
+        <div class="actions">
+          <button class="btn" onclick="generateOperationalReport()">Generate Operational</button>
+          <button class="btn" onclick="generateFinancialReport()">Generate Financial</button>
+          <button class="btn" onclick="generateYieldReport()">Generate Yield</button>
+          <button class="btn" onclick="generateGSTReport()">Generate GST</button>
+        </div>
+      </div>
+      <div class="card panel table-wrap">
+        <h3>Documents</h3>
+        <table><thead><tr><th>Generated At</th><th>Doc No</th><th>Type</th><th>Reference</th><th>Hash</th><th>Download</th></tr></thead><tbody>
+          ${state.documents.map(d => `<tr><td>${d.generatedAt}</td><td>${d.docNo}</td><td>${d.type}</td><td>${d.referenceType}:${d.referenceId}</td><td><code>${d.hash}</code></td><td><button class="btn" onclick="downloadDocumentPdf('${d.id}')">PDF</button></td></tr>`).join("")}
+        </tbody></table>
+      </div>
+      <div class="card panel table-wrap">
+        <h3>Certificates</h3>
+        <table><thead><tr><th>Generated At</th><th>Cert No</th><th>Type</th><th>Reference</th><th>Hash</th><th>Download</th></tr></thead><tbody>
+          ${state.certificates.map(c => `<tr><td>${c.generatedAt}</td><td>${c.certNo}</td><td>${c.type}</td><td>${c.referenceType}:${c.referenceId}</td><td><code>${c.hash}</code></td><td><button class="btn" onclick="downloadCertificatePdf('${c.id}')">PDF</button></td></tr>`).join("")}
+        </tbody></table>
+      </div>
+    `;
+  }
+
+  if (page === "Event Logs") {
+    return `
+      <div class="card panel table-wrap">
+        <h3>System Event Logs</h3>
+        <table><thead><tr><th>Time</th><th>Severity</th><th>Event</th><th>Actor</th><th>Details</th></tr></thead><tbody>
+          ${state.systemLogs.map(l => `<tr><td>${l.at}</td><td>${statusBadge(l.severity)}</td><td>${l.eventType}</td><td>${l.actor}</td><td><small>${JSON.stringify(l.details)}</small></td></tr>`).join("")}
         </tbody></table>
       </div>
     `;
@@ -1334,7 +1669,7 @@ function renderAll() {
 
   const activeModule = MODULES.find(m => m.key === state.ui.activeModule);
   document.getElementById("screenTitle").textContent = `${activeModule.label} • ${state.ui.activePage}`;
-  document.getElementById("screenSubtitle").textContent = "Module-level and page-level access enforced by Super Admin";
+  document.getElementById("screenSubtitle").textContent = `${FACTORY_NAME} • interconnected workflows, PDFs, certificates, reports, and full audit traceability`;
 
   document.getElementById("dashboardMount").innerHTML = kpiCardsHtml();
   document.getElementById("moduleMount").innerHTML = `
@@ -1434,6 +1769,12 @@ window.createQuotationFromEnquiry = createQuotationFromEnquiry;
 window.approveQuotation = approveQuotation;
 window.createSalesOrder = createSalesOrder;
 window.downloadWorkOrderPdf = downloadWorkOrderPdf;
+window.downloadDocumentPdf = downloadDocumentPdf;
+window.downloadCertificatePdf = downloadCertificatePdf;
+window.generateOperationalReport = generateOperationalReport;
+window.generateFinancialReport = generateFinancialReport;
+window.generateYieldReport = generateYieldReport;
+window.generateGSTReport = generateGSTReport;
 window.updateUserRole = updateUserRole;
 window.toggleModuleAccess = toggleModuleAccess;
 window.togglePageAccess = togglePageAccess;
