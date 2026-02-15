@@ -146,7 +146,8 @@ function ensureCurrentUserProfile() {
   if (!currentUser?.email) return;
   let profile = state.appUsers.find(u => u.email.toLowerCase() === currentUser.email.toLowerCase());
   if (!profile) {
-    const role = state.appUsers.length === 0 ? "Super Admin" : "Sales Manager";
+    const hasSuperAdmin = state.appUsers.some(u => u.role === "Super Admin");
+    const role = hasSuperAdmin ? "Sales Manager" : "Super Admin";
     profile = {
       id: id("USR"),
       name: currentUser.email.split("@")[0],
@@ -157,6 +158,12 @@ function ensureCurrentUserProfile() {
     };
     state.appUsers.push(profile);
     audit("CREATE", "user", profile.id, null, profile);
+  } else if (state.appUsers.length === 1 && profile.role !== "Super Admin") {
+    // Recovery path: if a single account is stuck with reduced access, promote it.
+    const old = clone(profile);
+    profile.role = "Super Admin";
+    profile.permissions = defaultPermissionsForRole("Super Admin");
+    audit("UPDATE", "user", profile.id, old, profile);
   }
 }
 
@@ -487,12 +494,14 @@ function downloadWorkOrderPdf(quotationId) {
 
 function seed() {
   resetState();
+  const adminEmail = currentUser?.email || "admin@factory.com";
+  const adminName = adminEmail.split("@")[0] || "Primary Admin";
 
   state.appUsers = [
     {
       id: id("USR"),
-      name: "Primary Admin",
-      email: "admin@factory.com",
+      name: adminName,
+      email: adminEmail,
       role: "Super Admin",
       permissions: defaultPermissionsForRole("Super Admin"),
       status: "ACTIVE"
